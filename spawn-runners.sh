@@ -33,14 +33,11 @@ get_runner_info() {
     local os="${platform%-*}"
     local arch="${platform#*-}"
 
-    local release_info
-    release_info=$(gh api /repos/actions/runner/releases/latest)
-
     local version
-    version=$(echo "$release_info" | jq -r '.tag_name' | sed 's/^v//')
+    version=$(gh api /repos/actions/runner/releases/latest --jq '.tag_name' | sed 's/^v//')
 
     local download_url
-    download_url=$(echo "$release_info" | jq -r ".assets[] | select(.name | contains(\"${os}-${arch}\")) | .browser_download_url" | head -1)
+    download_url=$(gh api /repos/actions/runner/releases/latest --jq ".assets[] | select(.name | contains(\"${os}-${arch}\")) | .browser_download_url" | head -1)
 
     echo "$version|$download_url"
 }
