@@ -65,14 +65,15 @@ jobs:
 
 - **ベース**: Ubuntu 24.04 (arm64)
 - **プリインストール**: Node.js 22 (bootstrap用), git, curl, jq, build-essential, shellcheck, unzip 等
-- **GitHub Actions Runner**: v2.331.0
+- **GitHub Actions Runner**: 起動時に最新版を自動取得
 
 `setup-node`, `setup-bun` 等の Actions はイメージのツールをブートストラップとして使い、
 ワークフローで指定されたバージョンで上書きする。
 
 ### イメージの再ビルド
 
-Runner バージョンを更新する場合：
+`spawn-runners-docker.sh` は起動時に GitHub API から最新の runner バージョンを取得してビルドする。
+手動で特定バージョンを指定する場合：
 
 ```bash
 docker build --build-arg RUNNER_VERSION=2.332.0 -t gh-runner docker/

@@ -84,9 +84,17 @@ echo "Prefix:     $PREFIX"
 echo "Image:      $IMAGE_NAME"
 echo ""
 
-# Build image if needed
+# Fetch latest runner version
+RUNNER_VERSION=$(gh api /repos/actions/runner/releases/latest --jq '.tag_name' 2>/dev/null | sed 's/^v//')
+if [ -z "$RUNNER_VERSION" ]; then
+    echo "Error: Failed to fetch latest runner version"
+    exit 1
+fi
+echo "Runner version: v$RUNNER_VERSION"
+
+# Build image
 echo "Building runner image..."
-docker build -t "$IMAGE_NAME" "$SCRIPT_DIR/docker/"
+docker build --build-arg RUNNER_VERSION="$RUNNER_VERSION" -t "$IMAGE_NAME" "$SCRIPT_DIR/docker/"
 echo ""
 
 # Get a fresh registration token

@@ -1,6 +1,6 @@
 FROM ubuntu:24.04
 
-ARG RUNNER_VERSION=2.331.0
+ARG RUNNER_VERSION
 ARG RUNNER_ARCH=arm64
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
