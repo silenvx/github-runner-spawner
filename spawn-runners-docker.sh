@@ -108,8 +108,8 @@ build_image() {
     while ! mkdir "$LOCK_DIR" 2>/dev/null; do
         local lock_pid
         lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
-        if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-            echo "Stale lock detected (PID $lock_pid), removing..."
+        if [ -z "$lock_pid" ] || ! kill -0 "$lock_pid" 2>/dev/null; then
+            echo "Stale lock detected (PID ${lock_pid:-none}), removing..."
             rm -rf "$LOCK_DIR"
             continue
         fi
@@ -129,6 +129,7 @@ build_image() {
         if ! docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"; then
             echo "Error: Failed to build runner image"
             release_lock
+            trap cleanup SIGINT SIGTERM
             return 1
         fi
     fi
@@ -256,7 +257,7 @@ while true; do
 
     # Rebuild image if version changed; running containers finish naturally
     # and will be respawned with the new image below
-    check_version_update
+    check_version_update || true
 
     for i in $(seq 1 "$COUNT"); do
         name=$(container_name "$i")
