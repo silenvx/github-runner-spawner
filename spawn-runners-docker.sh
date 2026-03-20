@@ -92,9 +92,38 @@ if [ -z "$RUNNER_VERSION" ]; then
 fi
 echo "Runner version: v$RUNNER_VERSION"
 
-# Build image
-echo "Building runner image..."
-docker build --build-arg RUNNER_VERSION="$RUNNER_VERSION" -t "$IMAGE_NAME" "$SCRIPT_DIR/docker/"
+CURRENT_RUNNER_VERSION="$RUNNER_VERSION"
+
+LOCK_DIR="/tmp/${IMAGE_NAME}-build.lock"
+
+# Build image if not already built for this version
+build_image() {
+    local tag="${IMAGE_NAME}:${CURRENT_RUNNER_VERSION}"
+    if docker image inspect "$tag" &>/dev/null; then
+        echo "Image $tag already exists, skipping build."
+        return
+    fi
+
+    # Acquire lock (mkdir is atomic)
+    while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+        echo "Another build in progress, waiting..."
+        sleep 5
+    done
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null; cleanup' SIGINT SIGTERM
+
+    # Re-check after acquiring lock
+    if docker image inspect "$tag" &>/dev/null; then
+        echo "Image $tag already built by another process, skipping."
+    else
+        echo "Building runner image (v$CURRENT_RUNNER_VERSION)..."
+        docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"
+    fi
+
+    rmdir "$LOCK_DIR"
+    trap cleanup SIGINT SIGTERM
+}
+
+build_image
 echo ""
 
 # Get a fresh registration token
@@ -129,7 +158,7 @@ start_runner() {
         -e RUNNER_TOKEN="$token" \
         -e RUNNER_NAME="$name" \
         -e RUNNER_LABELS="$LABEL" \
-        "$IMAGE_NAME" > /dev/null
+        "${IMAGE_NAME}:${CURRENT_RUNNER_VERSION}" > /dev/null
 
     echo "[$name] Started"
 }
@@ -169,9 +198,44 @@ done
 echo "=== Watching runners (Ctrl+C to stop) ==="
 echo ""
 
+# Check for runner version updates and rebuild if needed
+VERSION_CHECK_INTERVAL=300
+LAST_VERSION_CHECK=$(date +%s)
+
+check_version_update() {
+    local now
+    now=$(date +%s)
+    local elapsed=$((now - LAST_VERSION_CHECK))
+    if [ "$elapsed" -lt "$VERSION_CHECK_INTERVAL" ]; then
+        return 1
+    fi
+    LAST_VERSION_CHECK=$now
+
+    local latest
+    latest=$(gh api /repos/actions/runner/releases/latest --jq '.tag_name' 2>/dev/null | sed 's/^v//')
+    if [ -z "$latest" ]; then
+        return 1
+    fi
+    if [ "$latest" = "$CURRENT_RUNNER_VERSION" ]; then
+        return 1
+    fi
+
+    echo ""
+    echo "=== Runner version updated: v$CURRENT_RUNNER_VERSION -> v$latest ==="
+    CURRENT_RUNNER_VERSION="$latest"
+    build_image
+    echo ""
+    return 0
+}
+
 # Monitor loop: respawn containers that exit (job completed)
 while true; do
     sleep 5
+
+    # Rebuild image if version changed; running containers finish naturally
+    # and will be respawned with the new image below
+    check_version_update
+
     for i in $(seq 1 "$COUNT"); do
         name=$(container_name "$i")
         if ! docker ps -q -f "name=^${name}$" 2>/dev/null | grep -q .; then
