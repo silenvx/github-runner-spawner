@@ -104,26 +104,43 @@ build_image() {
         return
     fi
 
-    # Acquire lock (mkdir is atomic)
+    # Acquire lock (mkdir is atomic); detect stale locks via PID
     while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-        echo "Another build in progress, waiting..."
+        local lock_pid
+        lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+        if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+            echo "Stale lock detected (PID $lock_pid), removing..."
+            rm -rf "$LOCK_DIR"
+            continue
+        fi
+        echo "Another build in progress (PID ${lock_pid:-unknown}), waiting..."
         sleep 5
     done
-    trap 'rmdir "$LOCK_DIR" 2>/dev/null; cleanup' SIGINT SIGTERM
+    echo $$ > "$LOCK_DIR/pid"
+
+    release_lock() { rm -rf "$LOCK_DIR" 2>/dev/null || true; }
+    trap 'release_lock; cleanup' SIGINT SIGTERM
 
     # Re-check after acquiring lock
     if docker image inspect "$tag" &>/dev/null; then
         echo "Image $tag already built by another process, skipping."
     else
         echo "Building runner image (v$CURRENT_RUNNER_VERSION)..."
-        docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"
+        if ! docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"; then
+            echo "Error: Failed to build runner image"
+            release_lock
+            return 1
+        fi
     fi
 
-    rmdir "$LOCK_DIR"
+    release_lock
     trap cleanup SIGINT SIGTERM
 }
 
-build_image
+if ! build_image; then
+    echo "Error: Failed to build initial runner image"
+    exit 1
+fi
 echo ""
 
 # Get a fresh registration token
@@ -222,8 +239,13 @@ check_version_update() {
 
     echo ""
     echo "=== Runner version updated: v$CURRENT_RUNNER_VERSION -> v$latest ==="
+    local prev="$CURRENT_RUNNER_VERSION"
     CURRENT_RUNNER_VERSION="$latest"
-    build_image
+    if ! build_image; then
+        echo "Build failed, keeping v$prev"
+        CURRENT_RUNNER_VERSION="$prev"
+        return 1
+    fi
     echo ""
     return 0
 }
