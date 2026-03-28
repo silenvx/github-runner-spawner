@@ -53,31 +53,12 @@ jobs:
 
 ## 動作の流れ
 
-1. Docker イメージをビルド（キャッシュ利用）
+1. GitHub API から最新の runner バージョンを取得し、Docker イメージをビルド（同バージョンのイメージが存在すればスキップ）
 2. 指定数のコンテナを起動（各コンテナが独立した runner）
 3. 各 runner は `--ephemeral` で登録 → 1ジョブ実行 → コンテナ自動終了
 4. 終了を検知 → 新しいトークンで新コンテナを再起動
-5. Ctrl+C で全コンテナを停止・削除
-
-## Docker イメージ
-
-`docker/Dockerfile` でビルドされるイメージの構成：
-
-- **ベース**: Ubuntu 24.04 (arm64)
-- **プリインストール**: Node.js 22 (bootstrap用), git, curl, jq, build-essential, shellcheck, unzip 等
-- **GitHub Actions Runner**: 起動時に最新版を自動取得
-
-`setup-node`, `setup-bun` 等の Actions はイメージのツールをブートストラップとして使い、
-ワークフローで指定されたバージョンで上書きする。
-
-### イメージの再ビルド
-
-`spawn-runners-docker.sh` は起動時に GitHub API から最新の runner バージョンを取得してビルドする。
-手動で特定バージョンを指定する場合：
-
-```bash
-docker build --build-arg RUNNER_VERSION=2.332.0 -t gh-runner docker/
-```
+5. 5分ごとに runner バージョンの更新をチェックし、新バージョンがあればイメージを再ビルド（次回 respawn から適用）
+6. Ctrl+C で全コンテナを停止・削除
 
 ## 補助スクリプト
 
