@@ -206,18 +206,17 @@ start_runner() {
 
 # Cleanup all containers
 cleanup() {
-    echo ""
-    echo "=== Cleaning up ==="
+    log "=== Cleaning up ==="
     for i in $(seq 1 "$COUNT"); do
         local name
         name=$(container_name "$i")
-        echo "Stopping $name..."
+        log "Stopping $name..."
         docker stop "$name" 2>/dev/null || true
         docker rm -f "$name" 2>/dev/null || true
     done
     # Kill background processes
     kill $(jobs -p) 2>/dev/null || true
-    echo "Cleanup complete."
+    log "Cleanup complete."
     exit 0
 }
 
