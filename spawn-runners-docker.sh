@@ -11,6 +11,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="gh-runner"
 LABEL="self-hosted,linux,arm64,ephemeral"
+MAX_TOKEN_ATTEMPTS=3
+TOKEN_RETRY_DELAY=5
+RESPAWN_JITTER_MAX=3
+
+log() {
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] $*"
+}
 
 # Parse repository argument
 parse_repo() {
@@ -100,7 +107,7 @@ LOCK_DIR="/tmp/${IMAGE_NAME}-build.lock"
 build_image() {
     local tag="${IMAGE_NAME}:${CURRENT_RUNNER_VERSION}"
     if docker image inspect "$tag" &>/dev/null; then
-        echo "Image $tag already exists, skipping build."
+        log "Image $tag already exists, skipping build."
         return
     fi
 
@@ -109,11 +116,11 @@ build_image() {
         local lock_pid
         lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
         if [ -z "$lock_pid" ] || ! kill -0 "$lock_pid" 2>/dev/null; then
-            echo "Stale lock detected (PID ${lock_pid:-none}), removing..."
+            log "Stale lock detected (PID ${lock_pid:-none}), removing..."
             rm -rf "$LOCK_DIR"
             continue
         fi
-        echo "Another build in progress (PID ${lock_pid:-unknown}), waiting..."
+        log "Another build in progress (PID ${lock_pid:-unknown}), waiting..."
         sleep 5
     done
     echo $$ > "$LOCK_DIR/pid"
@@ -123,11 +130,11 @@ build_image() {
 
     # Re-check after acquiring lock
     if docker image inspect "$tag" &>/dev/null; then
-        echo "Image $tag already built by another process, skipping."
+        log "Image $tag already built by another process, skipping."
     else
-        echo "Building runner image (v$CURRENT_RUNNER_VERSION)..."
+        log "Building runner image (v$CURRENT_RUNNER_VERSION)..."
         if ! docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"; then
-            echo "Error: Failed to build runner image"
+            log "Error: Failed to build runner image"
             release_lock
             trap cleanup SIGINT SIGTERM
             return 1
@@ -144,9 +151,22 @@ if ! build_image; then
 fi
 echo ""
 
-# Get a fresh registration token
+# Get a fresh registration token with retry
 get_token() {
-    gh api --method POST "/repos/$REPO/actions/runners/registration-token" --jq '.token' 2>/dev/null
+    local token=""
+    for attempt in $(seq 1 "$MAX_TOKEN_ATTEMPTS"); do
+        token=$(gh api --method POST "/repos/$REPO/actions/runners/registration-token" --jq '.token' 2>/dev/null || echo "")
+        if [ -n "$token" ]; then
+            echo "$token"
+            return 0
+        fi
+        if [ "$attempt" -lt "$MAX_TOKEN_ATTEMPTS" ]; then
+            log "Token request failed (attempt ${attempt}/${MAX_TOKEN_ATTEMPTS}), retrying in ${TOKEN_RETRY_DELAY}s..."
+            sleep "$TOKEN_RETRY_DELAY"
+        fi
+    done
+    log "ERROR: Failed to get registration token after ${MAX_TOKEN_ATTEMPTS} attempts"
+    return 1
 }
 
 # Container name for runner N
@@ -163,13 +183,14 @@ start_runner() {
     local token
     token=$(get_token)
     if [ -z "$token" ]; then
-        echo "[$name] Error: Failed to get registration token"
+        log "[$name] Error: Failed to get registration token"
         return 1
     fi
 
     # Remove leftover container with same name
     docker rm -f "$name" 2>/dev/null || true
 
+    log "[$name] Starting container (image=${IMAGE_NAME}:${CURRENT_RUNNER_VERSION})"
     docker run -d \
         --name "$name" \
         -e REPO_URL="$REPO_URL" \
@@ -178,7 +199,7 @@ start_runner() {
         -e RUNNER_LABELS="$LABEL" \
         "${IMAGE_NAME}:${CURRENT_RUNNER_VERSION}" > /dev/null
 
-    echo "[$name] Started"
+    log "[$name] Started"
 }
 
 # Cleanup all containers
@@ -238,12 +259,11 @@ check_version_update() {
         return 1
     fi
 
-    echo ""
-    echo "=== Runner version updated: v$CURRENT_RUNNER_VERSION -> v$latest ==="
+    log "=== Runner version updated: v$CURRENT_RUNNER_VERSION -> v$latest ==="
     local prev="$CURRENT_RUNNER_VERSION"
     CURRENT_RUNNER_VERSION="$latest"
     if ! build_image; then
-        echo "Build failed, keeping v$prev"
+        log "Build failed, keeping v$prev"
         CURRENT_RUNNER_VERSION="$prev"
         return 1
     fi
@@ -262,10 +282,21 @@ while true; do
     for i in $(seq 1 "$COUNT"); do
         name=$(container_name "$i")
         if ! docker ps -q -f "name=^${name}$" 2>/dev/null | grep -q .; then
-            # Container exited — respawn with fresh token
-            echo ""
-            echo "[$name] Job finished. Respawning..."
-            start_runner "$i"
+            # Log exit code of finished container for debugging
+            local exit_code
+            exit_code=$(docker inspect "$name" --format='{{.State.ExitCode}}' 2>/dev/null || echo "unknown")
+            log "[$name] Container exited (exit_code=${exit_code}). Respawning..."
+
+            # Jitter to avoid simultaneous token requests when multiple runners exit together
+            if [ "$COUNT" -gt 1 ]; then
+                local jitter=$(( RANDOM % RESPAWN_JITTER_MAX ))
+                sleep "$jitter"
+            fi
+
+            if ! start_runner "$i"; then
+                log "[$name] WARNING: Failed to respawn, will retry next cycle"
+                continue
+            fi
             docker logs -f "$name" 2>/dev/null | sed "s|^|[$name] |" &
         fi
     done
