@@ -161,11 +161,11 @@ get_token() {
             return 0
         fi
         if [ "$attempt" -lt "$MAX_TOKEN_ATTEMPTS" ]; then
-            log "Token request failed (attempt ${attempt}/${MAX_TOKEN_ATTEMPTS}), retrying in ${TOKEN_RETRY_DELAY}s..."
+            log "Token request failed (attempt ${attempt}/${MAX_TOKEN_ATTEMPTS}), retrying in ${TOKEN_RETRY_DELAY}s..." >&2
             sleep "$TOKEN_RETRY_DELAY"
         fi
     done
-    log "ERROR: Failed to get registration token after ${MAX_TOKEN_ATTEMPTS} attempts"
+    log "ERROR: Failed to get registration token after ${MAX_TOKEN_ATTEMPTS} attempts" >&2
     return 1
 }
 
@@ -181,7 +181,9 @@ start_runner() {
     name=$(container_name "$n")
 
     local token
-    token=$(get_token)
+    if ! token=$(get_token); then
+        token=""
+    fi
     if [ -z "$token" ]; then
         log "[$name] Error: Failed to get registration token"
         return 1
@@ -283,13 +285,12 @@ while true; do
         name=$(container_name "$i")
         if ! docker ps -q -f "name=^${name}$" 2>/dev/null | grep -q .; then
             # Log exit code of finished container for debugging
-            local exit_code
             exit_code=$(docker inspect "$name" --format='{{.State.ExitCode}}' 2>/dev/null || echo "unknown")
             log "[$name] Container exited (exit_code=${exit_code}). Respawning..."
 
             # Jitter to avoid simultaneous token requests when multiple runners exit together
             if [ "$COUNT" -gt 1 ]; then
-                local jitter=$(( RANDOM % RESPAWN_JITTER_MAX ))
+                jitter=$(( RANDOM % RESPAWN_JITTER_MAX ))
                 sleep "$jitter"
             fi
 

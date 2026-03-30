@@ -63,3 +63,4 @@ set +e
 exit_code=$?
 set -e
 log "Runner listener exited with code ${exit_code}"
+exit "${exit_code}"
