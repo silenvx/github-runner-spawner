@@ -197,6 +197,7 @@ start_runner() {
         --name "$name" \
         -v gh-runner-npm-cache:/home/runner/.npm \
         -v gh-runner-playwright:/home/runner/pw-browsers \
+        -e PLAYWRIGHT_BROWSERS_PATH="/home/runner/pw-browsers" \
         -e REPO_URL="$REPO_URL" \
         -e RUNNER_TOKEN="$token" \
         -e RUNNER_NAME="$name" \
