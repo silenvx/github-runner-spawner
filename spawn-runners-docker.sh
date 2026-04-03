@@ -63,6 +63,7 @@ if ! [[ "$COUNT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
+REPO_SLUG=$(echo "$REPO" | tr '/' '-')
 REPO_URL="https://github.com/$REPO"
 
 # Check dependencies
@@ -195,6 +196,9 @@ start_runner() {
     log "[$name] Starting container (image=${IMAGE_NAME}:${CURRENT_RUNNER_VERSION})"
     docker run -d \
         --name "$name" \
+        -v "gh-runner-${REPO_SLUG}-npm-cache:/home/runner/.npm" \
+        -v "gh-runner-${REPO_SLUG}-playwright:/home/runner/pw-browsers" \
+        -e PLAYWRIGHT_BROWSERS_PATH="/home/runner/pw-browsers" \
         -e REPO_URL="$REPO_URL" \
         -e RUNNER_TOKEN="$token" \
         -e RUNNER_NAME="$name" \

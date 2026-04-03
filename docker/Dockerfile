@@ -21,6 +21,9 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
 RUN useradd -m runner \
     && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
+RUN mkdir -p /home/runner/.npm /home/runner/pw-browsers \
+    && chown -R runner:runner /home/runner/.npm /home/runner/pw-browsers
+
 USER runner
 WORKDIR /home/runner
 
