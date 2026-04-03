@@ -104,13 +104,11 @@ CURRENT_RUNNER_VERSION="$RUNNER_VERSION"
 
 LOCK_DIR="/tmp/${IMAGE_NAME}-build.lock"
 
-# Build image if not already built for this version
+# Build (or rebuild) image for this version
+# Always runs docker build to pick up Dockerfile/entrypoint changes;
+# Docker layer cache makes this fast when nothing changed.
 build_image() {
     local tag="${IMAGE_NAME}:${CURRENT_RUNNER_VERSION}"
-    if docker image inspect "$tag" &>/dev/null; then
-        log "Image $tag already exists, skipping build."
-        return
-    fi
 
     # Acquire lock (mkdir is atomic); detect stale locks via PID
     while ! mkdir "$LOCK_DIR" 2>/dev/null; do
@@ -129,17 +127,12 @@ build_image() {
     release_lock() { rm -rf "$LOCK_DIR" 2>/dev/null || true; }
     trap 'release_lock; cleanup' SIGINT SIGTERM
 
-    # Re-check after acquiring lock
-    if docker image inspect "$tag" &>/dev/null; then
-        log "Image $tag already built by another process, skipping."
-    else
-        log "Building runner image (v$CURRENT_RUNNER_VERSION)..."
-        if ! docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"; then
-            log "Error: Failed to build runner image"
-            release_lock
-            trap cleanup SIGINT SIGTERM
-            return 1
-        fi
+    log "Building runner image (v$CURRENT_RUNNER_VERSION)..."
+    if ! docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"; then
+        log "Error: Failed to build runner image"
+        release_lock
+        trap cleanup SIGINT SIGTERM
+        return 1
     fi
 
     release_lock
