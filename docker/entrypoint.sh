@@ -16,7 +16,13 @@ log() {
 cd /home/runner
 
 # Fix ownership of volume mount points (may be root-owned on first creation)
-sudo chown -R runner:runner /home/runner/.npm /home/runner/pw-browsers 2>/dev/null || true
+for dir in /home/runner/.npm /home/runner/pw-browsers; do
+    if [ -d "$dir" ] && [ "$(stat -c '%u' "$dir" 2>/dev/null)" != "$(id -u)" ]; then
+        if ! sudo chown -R runner:runner "$dir"; then
+            log "WARNING: Failed to fix ownership of $dir"
+        fi
+    fi
+done
 
 cleanup() {
     log "Cleanup triggered (EXIT trap)"
