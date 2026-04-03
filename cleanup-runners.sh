@@ -95,6 +95,11 @@ fi
 
 # Volume cleanup
 if [ "$CLEANUP_VOLUMES" = true ]; then
+    if ! command -v docker &> /dev/null; then
+        echo "Error: docker is not installed (required for --volumes)"
+        exit 1
+    fi
+
     echo "=== Cleanup Cache Volumes ==="
     echo ""
 
@@ -114,6 +119,7 @@ if [ "$CLEANUP_VOLUMES" = true ]; then
         echo "No cache volumes found for $REPO."
     else
         echo ""
+        read -r -t 0.1 _ 2>/dev/null || true
         read -p "Remove these volumes? [y/N] " -n 1 -r
         echo ""
 
