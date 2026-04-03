@@ -15,6 +15,9 @@ log() {
 
 cd /home/runner
 
+# Fix ownership of volume mount points (may be root-owned on first creation)
+sudo chown -R runner:runner /home/runner/.npm /home/runner/pw-browsers 2>/dev/null || true
+
 cleanup() {
     log "Cleanup triggered (EXIT trap)"
     if [ -f ".runner" ] && [ -f ".credentials" ]; then
