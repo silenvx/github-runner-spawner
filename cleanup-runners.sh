@@ -62,9 +62,10 @@ if ! gh auth status &> /dev/null; then
     exit 1
 fi
 
-# Get offline runners (include busy status)
+# Get offline runners (include busy status; tab-delimited to avoid issues with | in names)
+TAB=$'\t'
 if ! OFFLINE_RUNNERS=$(gh api --paginate "/repos/$REPO/actions/runners?per_page=100" \
-    --jq '.runners[] | select(.status == "offline") | "\(.id)|\(.name)|\(.busy)"'); then
+    --jq '.runners[] | select(.status == "offline") | "\(.id)\t\(.name)\t\(.busy)"'); then
     echo "Error: Failed to fetch runners for $REPO." >&2
     exit 1
 fi
@@ -75,11 +76,11 @@ else
     # Separate idle and busy runners
     IDLE_RUNNERS=""
     BUSY_RUNNERS=""
-    while IFS='|' read -r id name busy; do
+    while IFS="$TAB" read -r id name busy; do
         if [ "$busy" = "true" ]; then
-            BUSY_RUNNERS="${BUSY_RUNNERS}${id}|${name}"$'\n'
+            BUSY_RUNNERS="${BUSY_RUNNERS}${id}${TAB}${name}"$'\n'
         else
-            IDLE_RUNNERS="${IDLE_RUNNERS}${id}|${name}"$'\n'
+            IDLE_RUNNERS="${IDLE_RUNNERS}${id}${TAB}${name}"$'\n'
         fi
     done <<< "$OFFLINE_RUNNERS"
     IDLE_RUNNERS="${IDLE_RUNNERS%$'\n'}"
@@ -88,7 +89,7 @@ else
     # Handle idle runners
     if [ -n "$IDLE_RUNNERS" ]; then
         echo "Found offline runners:"
-        while IFS='|' read -r id name; do
+        while IFS="$TAB" read -r id name; do
             echo "  - $name (ID: $id)"
         done <<< "$IDLE_RUNNERS"
         echo ""
@@ -99,7 +100,7 @@ else
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             echo ""
             echo "Removing..."
-            while IFS='|' read -r id name; do
+            while IFS="$TAB" read -r id name; do
                 echo "  Removing $name..."
                 gh api --method DELETE "/repos/$REPO/actions/runners/$id" 2>/dev/null \
                     || echo "    Failed to remove $name"
@@ -114,7 +115,7 @@ else
     # Handle busy runners (offline but marked as running a job = likely hung)
     if [ -n "$BUSY_RUNNERS" ]; then
         echo "Found offline runners stuck in busy state (likely hung):"
-        while IFS='|' read -r id name; do
+        while IFS="$TAB" read -r id name; do
             echo "  - $name (ID: $id)"
         done <<< "$BUSY_RUNNERS"
         echo ""
@@ -131,7 +132,7 @@ else
 
             # Build runner ID set for lookup
             BUSY_IDS=""
-            while IFS='|' read -r id name; do
+            while IFS="$TAB" read -r id name; do
                 BUSY_IDS="${BUSY_IDS} ${id} "
             done <<< "$BUSY_RUNNERS"
 
@@ -166,7 +167,7 @@ else
 
             # Remove runners with retry (cancellation is asynchronous)
             echo "Removing runners..."
-            while IFS='|' read -r id name; do
+            while IFS="$TAB" read -r id name; do
                 removed=false
                 for attempt in 1 2 3; do
                     if gh api --method DELETE "/repos/$REPO/actions/runners/$id" 2>/dev/null; then
@@ -208,7 +209,7 @@ if [ "$CLEANUP_VOLUMES" = true ]; then
     found_volumes=()
     for vol in "$NPM_VOL" "$PW_VOL"; do
         if docker volume inspect "$vol" &>/dev/null; then
-            size=$(docker system df -v 2>/dev/null | grep "^$vol " | awk '{print $3 $4}')
+            size=$(docker system df -v 2>/dev/null | grep -F "$vol " | awk '{print $3 $4}')
             found_volumes+=("$vol")
             echo "  $vol (${size:-size unknown})"
         fi
