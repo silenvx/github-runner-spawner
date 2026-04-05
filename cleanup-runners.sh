@@ -63,8 +63,11 @@ if ! gh auth status &> /dev/null; then
 fi
 
 # Get offline runners (include busy status)
-OFFLINE_RUNNERS=$(gh api "/repos/$REPO/actions/runners" \
-    --jq '.runners[] | select(.status == "offline") | "\(.id)|\(.name)|\(.busy)"' 2>/dev/null)
+if ! OFFLINE_RUNNERS=$(gh api --paginate "/repos/$REPO/actions/runners?per_page=100" \
+    --jq '.runners[] | select(.status == "offline") | "\(.id)|\(.name)|\(.busy)"'); then
+    echo "Error: Failed to fetch runners for $REPO." >&2
+    exit 1
+fi
 
 if [ -z "$OFFLINE_RUNNERS" ]; then
     echo "No offline runners found."
@@ -119,7 +122,7 @@ else
         echo "Their associated workflow runs must be cancelled before removal."
         echo ""
 
-        read -r -t 0.1 _ 2>/dev/null || true
+        while IFS= read -r -t 0 -n 1 _ 2>/dev/null; do :; done
         read -p "Cancel associated runs and remove these runners? [y/N] " -n 1 -r
         echo ""
 
@@ -134,14 +137,14 @@ else
 
             # Find and cancel workflow runs on these runners
             echo "Cancelling associated workflow runs..."
-            IN_PROGRESS_RUNS=$(gh api "/repos/$REPO/actions/runs?status=in_progress&per_page=100" \
+            IN_PROGRESS_RUNS=$(gh api --paginate "/repos/$REPO/actions/runs?status=in_progress&per_page=100" \
                 --jq '.workflow_runs[].id' 2>/dev/null)
 
             if [ -n "$IN_PROGRESS_RUNS" ]; then
                 while read -r run_id; do
                     # Check if any job in this run is assigned to a busy runner
-                    MATCHED_RUNNER=$(gh api "/repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
-                        --jq "[.jobs[] | select(.runner_id != null) | .runner_id] | .[]" 2>/dev/null)
+                    MATCHED_RUNNER=$(gh api --paginate "/repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
+                        --jq "[.jobs[] | select(.status == \"in_progress\" and .runner_id != null) | .runner_id] | .[]" 2>/dev/null)
 
                     for runner_id in $MATCHED_RUNNER; do
                         if [[ "$BUSY_IDS" == *" ${runner_id} "* ]]; then
@@ -200,7 +203,7 @@ if [ "$CLEANUP_VOLUMES" = true ]; then
         echo "No cache volumes found for $REPO."
     else
         echo ""
-        read -r -t 0.1 _ 2>/dev/null || true
+        while IFS= read -r -t 0 -n 1 _ 2>/dev/null; do :; done
         read -p "Remove these volumes? [y/N] " -n 1 -r
         echo ""
 
