@@ -137,14 +137,20 @@ else
 
             # Find and cancel workflow runs on these runners
             echo "Cancelling associated workflow runs..."
-            IN_PROGRESS_RUNS=$(gh api --paginate "/repos/$REPO/actions/runs?status=in_progress&per_page=100" \
-                --jq '.workflow_runs[].id' 2>/dev/null)
+            if ! IN_PROGRESS_RUNS=$(gh api --paginate "/repos/$REPO/actions/runs?status=in_progress&per_page=100" \
+                --jq '.workflow_runs[].id' 2>/dev/null); then
+                echo "  Warning: Failed to fetch in-progress runs, skipping cancellation"
+                IN_PROGRESS_RUNS=""
+            fi
 
             if [ -n "$IN_PROGRESS_RUNS" ]; then
                 while read -r run_id; do
-                    # Check if any job in this run is assigned to a busy runner
-                    MATCHED_RUNNER=$(gh api --paginate "/repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
-                        --jq "[.jobs[] | select(.status == \"in_progress\" and .runner_id != null) | .runner_id] | .[]" 2>/dev/null)
+                    # Check if any in-progress job in this run is assigned to a busy runner
+                    if ! MATCHED_RUNNER=$(gh api --paginate "/repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
+                        --jq "[.jobs[] | select(.status == \"in_progress\" and .runner_id != null) | .runner_id] | .[]" 2>/dev/null); then
+                        echo "  Warning: Failed to fetch jobs for run $run_id, skipping"
+                        continue
+                    fi
 
                     for runner_id in $MATCHED_RUNNER; do
                         if [[ "$BUSY_IDS" == *" ${runner_id} "* ]]; then
@@ -158,16 +164,25 @@ else
                 done <<< "$IN_PROGRESS_RUNS"
             fi
 
-            # Wait for cancellation to propagate
-            echo "  Waiting for cancellations to propagate..."
-            sleep 3
-
-            # Now remove the runners
+            # Remove runners with retry (cancellation is asynchronous)
             echo "Removing runners..."
             while IFS='|' read -r id name; do
-                echo "  Removing $name..."
-                gh api --method DELETE "/repos/$REPO/actions/runners/$id" 2>/dev/null \
-                    || echo "    Failed to remove $name (run may still be cancelling, retry later)"
+                removed=false
+                for attempt in 1 2 3; do
+                    if gh api --method DELETE "/repos/$REPO/actions/runners/$id" 2>/dev/null; then
+                        removed=true
+                        break
+                    fi
+                    if [ "$attempt" -lt 3 ]; then
+                        echo "    Retrying removal of $name ($attempt/3)..."
+                        sleep 3
+                    fi
+                done
+                if [ "$removed" = true ]; then
+                    echo "  Removed $name"
+                else
+                    echo "    Failed to remove $name after 3 attempts (retry later)"
+                fi
             done <<< "$BUSY_RUNNERS"
             echo ""
         else
