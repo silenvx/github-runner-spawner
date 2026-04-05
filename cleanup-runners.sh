@@ -62,34 +62,134 @@ if ! gh auth status &> /dev/null; then
     exit 1
 fi
 
-# Get offline runners
-OFFLINE_RUNNERS=$(gh api "/repos/$REPO/actions/runners" --jq '.runners[] | select(.status == "offline") | "\(.id)|\(.name)"' 2>/dev/null)
+# Get offline runners (include busy status; tab-delimited to avoid issues with | in names)
+TAB=$'\t'
+if ! OFFLINE_RUNNERS=$(gh api --paginate "/repos/$REPO/actions/runners?per_page=100" \
+    --jq '.runners[] | select(.status == "offline") | "\(.id)\t\(.name)\t\(.busy)"'); then
+    echo "Error: Failed to fetch runners for $REPO." >&2
+    exit 1
+fi
 
 if [ -z "$OFFLINE_RUNNERS" ]; then
     echo "No offline runners found."
 else
-    echo "Found offline runners:"
-    echo "$OFFLINE_RUNNERS" | while IFS='|' read -r id name; do
-        echo "  - $name (ID: $id)"
-    done
-    echo ""
+    # Separate idle and busy runners
+    IDLE_RUNNERS=""
+    BUSY_RUNNERS=""
+    while IFS="$TAB" read -r id name busy; do
+        if [ "$busy" = "true" ]; then
+            BUSY_RUNNERS="${BUSY_RUNNERS}${id}${TAB}${name}"$'\n'
+        else
+            IDLE_RUNNERS="${IDLE_RUNNERS}${id}${TAB}${name}"$'\n'
+        fi
+    done <<< "$OFFLINE_RUNNERS"
+    IDLE_RUNNERS="${IDLE_RUNNERS%$'\n'}"
+    BUSY_RUNNERS="${BUSY_RUNNERS%$'\n'}"
 
-    # Confirm
-    read -p "Remove these runners from GitHub? [y/N] " -n 1 -r
-    echo ""
+    # Handle idle runners
+    if [ -n "$IDLE_RUNNERS" ]; then
+        echo "Found offline runners:"
+        while IFS="$TAB" read -r id name; do
+            echo "  - $name (ID: $id)"
+        done <<< "$IDLE_RUNNERS"
+        echo ""
 
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        read -p "Remove these runners from GitHub? [y/N] " -n 1 -r
         echo ""
-        echo "Removing..."
 
-        echo "$OFFLINE_RUNNERS" | while IFS='|' read -r id name; do
-            echo "  Removing $name..."
-            gh api --method DELETE "/repos/$REPO/actions/runners/$id" 2>/dev/null || echo "    Failed to remove $name"
-        done
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo ""
+            echo "Removing..."
+            while IFS="$TAB" read -r id name; do
+                echo "  Removing $name..."
+                gh api --method DELETE "/repos/$REPO/actions/runners/$id" 2>/dev/null \
+                    || echo "    Failed to remove $name"
+            done <<< "$IDLE_RUNNERS"
+            echo ""
+        else
+            echo "Skipped runner removal."
+            echo ""
+        fi
+    fi
+
+    # Handle busy runners (offline but marked as running a job = likely hung)
+    if [ -n "$BUSY_RUNNERS" ]; then
+        echo "Found offline runners stuck in busy state (likely hung):"
+        while IFS="$TAB" read -r id name; do
+            echo "  - $name (ID: $id)"
+        done <<< "$BUSY_RUNNERS"
         echo ""
-    else
-        echo "Skipped runner removal."
+        echo "These runners are offline but GitHub thinks they are running a job."
+        echo "Their associated workflow runs must be cancelled before removal."
         echo ""
+
+        while IFS= read -r -t 0 -n 1 _ 2>/dev/null; do :; done
+        read -p "Cancel associated runs and remove these runners? [y/N] " -n 1 -r
+        echo ""
+
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo ""
+
+            # Build runner ID set for lookup
+            BUSY_IDS=""
+            while IFS="$TAB" read -r id name; do
+                BUSY_IDS="${BUSY_IDS} ${id} "
+            done <<< "$BUSY_RUNNERS"
+
+            # Find and cancel workflow runs on these runners
+            echo "Cancelling associated workflow runs..."
+            if ! IN_PROGRESS_RUNS=$(gh api --paginate "/repos/$REPO/actions/runs?status=in_progress&per_page=100" \
+                --jq '.workflow_runs[].id' 2>/dev/null); then
+                echo "  Warning: Failed to fetch in-progress runs, skipping cancellation"
+                IN_PROGRESS_RUNS=""
+            fi
+
+            if [ -n "$IN_PROGRESS_RUNS" ]; then
+                while read -r run_id; do
+                    # Check if any in-progress job in this run is assigned to a busy runner
+                    if ! MATCHED_RUNNER=$(gh api --paginate "/repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
+                        --jq "[.jobs[] | select(.status == \"in_progress\" and .runner_id != null) | .runner_id] | .[]" 2>/dev/null); then
+                        echo "  Warning: Failed to fetch jobs for run $run_id, skipping"
+                        continue
+                    fi
+
+                    for runner_id in $MATCHED_RUNNER; do
+                        if [[ "$BUSY_IDS" == *" ${runner_id} "* ]]; then
+                            echo "  Cancelling run $run_id..."
+                            gh api --method POST \
+                                "/repos/$REPO/actions/runs/$run_id/cancel" 2>/dev/null \
+                                || echo "    Failed to cancel run $run_id"
+                            break
+                        fi
+                    done
+                done <<< "$IN_PROGRESS_RUNS"
+            fi
+
+            # Remove runners with retry (cancellation is asynchronous)
+            echo "Removing runners..."
+            while IFS="$TAB" read -r id name; do
+                removed=false
+                for attempt in 1 2 3; do
+                    if gh api --method DELETE "/repos/$REPO/actions/runners/$id" 2>/dev/null; then
+                        removed=true
+                        break
+                    fi
+                    if [ "$attempt" -lt 3 ]; then
+                        echo "    Retrying removal of $name ($attempt/3)..."
+                        sleep 3
+                    fi
+                done
+                if [ "$removed" = true ]; then
+                    echo "  Removed $name"
+                else
+                    echo "    Failed to remove $name after 3 attempts (retry later)"
+                fi
+            done <<< "$BUSY_RUNNERS"
+            echo ""
+        else
+            echo "Skipped busy runner removal."
+            echo ""
+        fi
     fi
 fi
 
@@ -109,7 +209,7 @@ if [ "$CLEANUP_VOLUMES" = true ]; then
     found_volumes=()
     for vol in "$NPM_VOL" "$PW_VOL"; do
         if docker volume inspect "$vol" &>/dev/null; then
-            size=$(docker system df -v 2>/dev/null | grep "^$vol " | awk '{print $3 $4}')
+            size=$(docker system df -v 2>/dev/null | grep -F "$vol " | awk '{print $3 $4}')
             found_volumes+=("$vol")
             echo "  $vol (${size:-size unknown})"
         fi
@@ -119,7 +219,7 @@ if [ "$CLEANUP_VOLUMES" = true ]; then
         echo "No cache volumes found for $REPO."
     else
         echo ""
-        read -r -t 0.1 _ 2>/dev/null || true
+        while IFS= read -r -t 0 -n 1 _ 2>/dev/null; do :; done
         read -p "Remove these volumes? [y/N] " -n 1 -r
         echo ""
 
