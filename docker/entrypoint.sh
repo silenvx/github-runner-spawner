@@ -24,6 +24,12 @@ for dir in /home/runner/.npm /home/runner/pw-browsers; do
     fi
 done
 
+# Purge npm cache to prevent EACCES hangs from root-owned artifacts
+if [ -d /home/runner/.npm/_cacache ]; then
+    sudo rm -rf /home/runner/.npm/_cacache
+    log "Purged ~/.npm/_cacache"
+fi
+
 cleanup() {
     log "Cleanup triggered (EXIT trap)"
     if [ -f ".runner" ] && [ -f ".credentials" ]; then
