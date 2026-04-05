@@ -24,10 +24,13 @@ for dir in /home/runner/.npm /home/runner/pw-browsers; do
     fi
 done
 
-# Purge npm cache to prevent EACCES hangs from root-owned artifacts
-if [ -d /home/runner/.npm/_cacache ]; then
-    sudo rm -rf /home/runner/.npm/_cacache
-    log "Purged ~/.npm/_cacache"
+# Purge npm cache only when root-owned artifacts exist (causes EACCES hangs in npm ci)
+if [ -d /home/runner/.npm/_cacache ] && [ "$(stat -c '%u' /home/runner/.npm/_cacache 2>/dev/null)" != "$(id -u)" ]; then
+    if sudo rm -rf /home/runner/.npm/_cacache; then
+        log "Purged ~/.npm/_cacache (was root-owned)"
+    else
+        log "WARNING: Failed to purge ~/.npm/_cacache"
+    fi
 fi
 
 cleanup() {
