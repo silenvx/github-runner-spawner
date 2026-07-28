@@ -10,6 +10,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="gh-runner"
+# No arch label: the runner self-assigns X64/ARM64 from the container it runs in
+LABEL="self-hosted,linux,ephemeral"
 MAX_TOKEN_ATTEMPTS=3
 TOKEN_RETRY_DELAY=5
 RESPAWN_JITTER_MAX=3
@@ -17,22 +19,6 @@ RESPAWN_JITTER_MAX=3
 log() {
     echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] $*"
 }
-
-# Translate uname -m to the arch slug used by actions/runner release tarballs
-detect_runner_arch() {
-    case "$(uname -m)" in
-        x86_64 | amd64) echo "x64" ;;
-        aarch64 | arm64) echo "arm64" ;;
-        *) return 1 ;;
-    esac
-}
-
-if ! RUNNER_ARCH=$(detect_runner_arch); then
-    echo "Error: Unsupported host architecture: $(uname -m)"
-    exit 1
-fi
-
-LABEL="self-hosted,linux,${RUNNER_ARCH},ephemeral"
 
 # Parse repository argument
 parse_repo() {
@@ -105,7 +91,6 @@ echo "Repository: $REPO"
 echo "Count:      $COUNT"
 echo "Prefix:     $PREFIX"
 echo "Image:      $IMAGE_NAME"
-echo "Arch:       $RUNNER_ARCH"
 echo ""
 
 # Fetch latest runner version
@@ -144,10 +129,7 @@ build_image() {
     trap 'release_lock; cleanup' SIGINT SIGTERM
 
     log "Building runner image (v$CURRENT_RUNNER_VERSION)..."
-    if ! docker build \
-        --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" \
-        --build-arg RUNNER_ARCH="$RUNNER_ARCH" \
-        -t "$tag" "$SCRIPT_DIR/docker/"; then
+    if ! docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"; then
         log "Error: Failed to build runner image"
         release_lock
         trap cleanup SIGINT SIGTERM
