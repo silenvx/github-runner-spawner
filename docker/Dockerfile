@@ -1,7 +1,7 @@
 FROM ubuntu:24.04
 
 ARG RUNNER_VERSION
-ARG RUNNER_ARCH=arm64
+ARG RUNNER_ARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl jq git sudo ca-certificates build-essential libicu-dev gnupg \

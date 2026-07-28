@@ -45,11 +45,13 @@ gh auth login
 ```yaml
 jobs:
   build:
-    runs-on: [self-hosted, linux, arm64, ephemeral]
+    runs-on: [self-hosted, linux, ephemeral]
     steps:
       - uses: actions/checkout@v4
       - run: echo "Running in ephemeral container"
 ```
+
+ランナーにはホストのアーキテクチャに応じたラベル (`x64` / `arm64`) も付与される。特定アーキテクチャに限定したい場合は `runs-on` に追加する。
 
 ## 動作の流れ
 

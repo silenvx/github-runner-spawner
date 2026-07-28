@@ -4,7 +4,7 @@ set -euo pipefail
 : "${REPO_URL:?REPO_URL is required}"
 : "${RUNNER_TOKEN:?RUNNER_TOKEN is required}"
 : "${RUNNER_NAME:=ephemeral-runner-$$}"
-: "${RUNNER_LABELS:=self-hosted,linux,arm64,ephemeral}"
+: "${RUNNER_LABELS:?RUNNER_LABELS is required}"
 
 MAX_REGISTER_ATTEMPTS=5
 REGISTER_RETRY_BASE_DELAY=10
