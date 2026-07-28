@@ -10,7 +10,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="gh-runner"
-LABEL="self-hosted,linux,arm64,ephemeral"
+# No arch label: the runner self-assigns X64/ARM64 from the container it runs in
+LABEL="self-hosted,linux,ephemeral"
 MAX_TOKEN_ATTEMPTS=3
 TOKEN_RETRY_DELAY=5
 RESPAWN_JITTER_MAX=3
@@ -128,7 +129,8 @@ build_image() {
     trap 'release_lock; cleanup' SIGINT SIGTERM
 
     log "Building runner image (v$CURRENT_RUNNER_VERSION)..."
-    if ! docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"; then
+    # BuildKit is required: TARGETARCH is not set by the classic builder
+    if ! DOCKER_BUILDKIT=1 docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"; then
         log "Error: Failed to build runner image"
         release_lock
         trap cleanup SIGINT SIGTERM
@@ -229,7 +231,7 @@ echo ""
 # Stream logs from all containers
 for i in $(seq 1 "$COUNT"); do
     name=$(container_name "$i")
-    docker logs -f "$name" 2>/dev/null | sed "s|^|[$name] |" &
+    docker logs -f "$name" 2>&1 | sed "s|^|[$name] |" &
 done
 
 echo "=== Watching runners (Ctrl+C to stop) ==="
@@ -294,7 +296,7 @@ while true; do
                 log "[$name] WARNING: Failed to respawn, will retry next cycle"
                 continue
             fi
-            docker logs -f "$name" 2>/dev/null | sed "s|^|[$name] |" &
+            docker logs -f "$name" 2>&1 | sed "s|^|[$name] |" &
         fi
     done
 done

@@ -1,7 +1,7 @@
 FROM ubuntu:24.04
 
 ARG RUNNER_VERSION
-ARG RUNNER_ARCH=arm64
+ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl jq git sudo ca-certificates build-essential libicu-dev gnupg \
@@ -27,8 +27,14 @@ RUN mkdir -p /home/runner/.npm /home/runner/pw-browsers \
 USER runner
 WORKDIR /home/runner
 
-RUN curl -fsSL -o actions-runner.tar.gz \
-    "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
+# actions/runner tarballs are named x64/arm64, not Docker's amd64/arm64
+RUN case "${TARGETARCH}" in \
+        amd64) runner_arch=x64 ;; \
+        arm64) runner_arch=arm64 ;; \
+        *) echo "Unsupported TARGETARCH: '${TARGETARCH}'" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o actions-runner.tar.gz \
+        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${runner_arch}-${RUNNER_VERSION}.tar.gz" \
     && tar xzf actions-runner.tar.gz \
     && rm actions-runner.tar.gz
 
