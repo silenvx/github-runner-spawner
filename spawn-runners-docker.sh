@@ -129,7 +129,8 @@ build_image() {
     trap 'release_lock; cleanup' SIGINT SIGTERM
 
     log "Building runner image (v$CURRENT_RUNNER_VERSION)..."
-    if ! docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"; then
+    # BuildKit is required: TARGETARCH is not set by the classic builder
+    if ! DOCKER_BUILDKIT=1 docker build --build-arg RUNNER_VERSION="$CURRENT_RUNNER_VERSION" -t "$tag" "$SCRIPT_DIR/docker/"; then
         log "Error: Failed to build runner image"
         release_lock
         trap cleanup SIGINT SIGTERM
