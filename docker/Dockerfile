@@ -18,13 +18,14 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     && apt-get update && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# gh is absent from the Ubuntu repos, and workflows driving issues/PRs need it
+# noble universe pins gh at 2.45.0, so take the latest from the official apt repo.
+# The suite qualifier keeps a missing repo loud instead of silently installing that 2.45.0
 RUN curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
         https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && apt-get update && apt-get install -y --no-install-recommends gh/stable \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m runner \
