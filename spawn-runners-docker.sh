@@ -193,6 +193,7 @@ start_runner() {
         --name "$name" \
         -v "gh-runner-${REPO_SLUG}-npm-cache:/home/runner/.npm" \
         -v "gh-runner-${REPO_SLUG}-playwright:/home/runner/pw-browsers" \
+        -v "gh-runner-${REPO_SLUG}-hook-test-slots:/home/runner/.local/state/run_hook_tests" \
         -e PLAYWRIGHT_BROWSERS_PATH="/home/runner/pw-browsers" \
         -e REPO_URL="$REPO_URL" \
         -e RUNNER_TOKEN="$token" \
