@@ -31,8 +31,8 @@ RUN curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
 RUN useradd -m runner \
     && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-RUN mkdir -p /home/runner/.npm /home/runner/pw-browsers \
-    && chown -R runner:runner /home/runner/.npm /home/runner/pw-browsers
+RUN mkdir -p /home/runner/.npm /home/runner/pw-browsers /home/runner/.local/state/run_hook_tests \
+    && chown -R runner:runner /home/runner/.npm /home/runner/pw-browsers /home/runner/.local
 
 USER runner
 WORKDIR /home/runner

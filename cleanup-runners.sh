@@ -34,7 +34,7 @@ if [ $# -lt 1 ]; then
     echo "Usage: $0 [--volumes] <repo>"
     echo ""
     echo "  repo      - owner/repo or https://github.com/owner/repo"
-    echo "  --volumes - Also remove cache volumes (npm, Playwright)"
+    echo "  --volumes - Also remove cache volumes (npm, Playwright, hook-test slots)"
     echo ""
     echo "Example:"
     echo "  $0 owner/repo"
@@ -205,9 +205,10 @@ if [ "$CLEANUP_VOLUMES" = true ]; then
 
     NPM_VOL="gh-runner-${REPO_SLUG}-npm-cache"
     PW_VOL="gh-runner-${REPO_SLUG}-playwright"
+    HOOK_TEST_SLOTS_VOL="gh-runner-${REPO_SLUG}-hook-test-slots"
 
     found_volumes=()
-    for vol in "$NPM_VOL" "$PW_VOL"; do
+    for vol in "$NPM_VOL" "$PW_VOL" "$HOOK_TEST_SLOTS_VOL"; do
         if docker volume inspect "$vol" &>/dev/null; then
             size=$(docker system df -v 2>/dev/null | grep -F "$vol " | awk '{print $3 $4}')
             found_volumes+=("$vol")

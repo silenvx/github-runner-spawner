@@ -17,7 +17,7 @@ cd /home/runner
 
 # Fix ownership of volume mount points (may be root-owned on first creation)
 # Checks files inside too — the parent may be runner-owned while internal files remain root-owned
-for dir in /home/runner/.npm /home/runner/pw-browsers; do
+for dir in /home/runner/.npm /home/runner/pw-browsers /home/runner/.local/state/run_hook_tests; do
     if [ -d "$dir" ] && [ -n "$(sudo find "$dir" ! -user runner -print -quit 2>/dev/null)" ]; then
         if ! sudo chown -R runner:runner "$dir"; then
             log "WARNING: Failed to fix ownership of $dir"
