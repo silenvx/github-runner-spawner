@@ -561,11 +561,11 @@ class Dispatcher:
         elif now - self._drain_started > SIGNAL_DEBOUNCE:
             self.force_stop = True
 
-    def _sleep(self) -> None:
-        # Short sleeps let a signal end the wait without the handler touching a lock
-        draining, force_stop = self.draining, self.force_stop
+    def _sleep(self, seen: tuple[bool, bool]) -> None:
+        # Short sleeps let a signal end the wait without the handler touching a lock.
+        # `seen` is taken at the start of the cycle, so a signal that arrived during the cycle also ends it.
         for _ in range(self.config.poll_interval):
-            if self.draining != draining or self.force_stop != force_stop:
+            if (self.draining, self.force_stop) != seen:
                 return
             time.sleep(1)
 
@@ -584,6 +584,7 @@ class Dispatcher:
             self.launchers[pool.name].prepare()
         log(f"Watching {', '.join(self.config.repos)} every {self.config.poll_interval}s")
         while True:
+            seen = (self.draining, self.force_stop)
             if self.force_stop:
                 log("Stopping all runners now")
                 for runner in list(self.runners):
@@ -603,7 +604,7 @@ class Dispatcher:
                     break
             else:
                 self.dispatch_once()
-            self._sleep()
+            self._sleep(seen)
         log("Stopped.")
 
     def dispatch_once(self) -> None:
