@@ -33,7 +33,7 @@ runner はこの値をログでマスクし、ジョブの環境変数からは�
 - `docker` プール: Docker (Docker Desktop / [OrbStack](https://orbstack.dev/) 推奨)
 - `windows` プール: 次の準備をした Windows 機
   - Mac から鍵認証で `ssh <host>` できる (OpenSSH Server)
-  - [actions/runner](https://github.com/actions/runner/releases) の Windows 版 (`actions-runner-win-x64-*.zip`) を、空白や `%` を含まない絶対パスのフォルダに展開してある。`config.cmd` は実行しない
+  - [actions/runner](https://github.com/actions/runner/releases) の Windows 版 (`actions-runner-win-x64-*.zip`) を、絶対パスのフォルダに展開してある。パスには空白と `` " ' ` $ ; & | < > % ^ `` を含められない (ssh・scp・cmd.exe に渡すため)。`config.cmd` は実行しない
   - ジョブが使うツール (git 等) を入れてある。ジョブは ssh のセッションで動くため、デスクトップ (GUI) は使えない
 
 ## 使い方
