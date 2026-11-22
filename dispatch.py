@@ -41,14 +41,15 @@ STOP_TIMEOUT = 120
 SIGNAL_DEBOUNCE = 1.0
 # GitHub's answer to deleting a runner that is running a job
 RUNNER_BUSY_STATUS = 422
+PAGE_SIZE = 100
 DOCKER_IMAGE = "gh-runner-jit"
 DOCKER_POOL_LABEL = "github-runner-spawner.pool"
 WINDOWS_WRAPPER = "spawner-run-jit.ps1"
 
 REPO_RE = re.compile(r"^[a-z0-9_.-]+/[a-z0-9_.-]+$")
 POOL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-# runner_dir is embedded in the remote PowerShell command line
-UNSAFE_REMOTE_CHARS = set("\"'`$;&|<>\n\r")
+# runner_dir is embedded in the remote PowerShell command line and in the scp target, which a remote shell may split
+UNSAFE_REMOTE_CHARS = set("\"'`$;&|<>\n\r ")
 
 _log_lock = threading.Lock()
 
@@ -171,7 +172,7 @@ def parse_config(data: dict, arch_label: str) -> Config:
             if not isinstance(runner_dir, str) or not runner_dir:
                 raise ConfigError(f"{where}.runner_dir must be a path")
             if UNSAFE_REMOTE_CHARS & set(runner_dir):
-                raise ConfigError(f"{where}.runner_dir contains characters that cannot be quoted safely")
+                raise ConfigError(f"{where}.runner_dir must not contain spaces or shell characters")
             pools.append(
                 Pool(
                     name=name,
@@ -221,7 +222,8 @@ class Runner:
 
     @property
     def waiting(self) -> bool:
-        return not self.assigned and not self.detached
+        # A detached runner without a job is still listening, so it can take a job and must be able to time out
+        return not self.assigned
 
 
 def count_demand(pools: tuple[Pool, ...], queued: dict[str, list[list[str]]]) -> Counter:
@@ -500,6 +502,9 @@ def start_process(name: str, command: list[str], jit_config: str) -> subprocess.
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        # A decode error would end the reader thread, and the full pipe would then block the runner
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         start_new_session=True,
     )
@@ -591,12 +596,15 @@ class Dispatcher:
         for runner in self.runners:
             if runner.name in assigned and not runner.assigned:
                 runner.assigned = True
-        for runner in idle_runners(self.runners, now, self.config.idle_timeout):
-            self.terminate(runner, "idle timeout")
         demand = count_demand(self.config.pools, queued)
         blocked = {name for name, until in self.blocked_until.items() if until > now}
+        # Planned before idle stops: a stop that finds the runner busy would otherwise leave its job counted twice
         for pool, repo in plan_spawns(self.config.pools, demand, self.runners, blocked):
+            if self.draining:
+                break
             self.spawn(pool, repo)
+        for runner in idle_runners(self.runners, now, self.config.idle_timeout):
+            self.terminate(runner, "idle timeout")
         for launcher in self.launchers.values():
             launcher.tick(now)
 
@@ -611,14 +619,10 @@ class Dispatcher:
                     continue
                 run_ids: dict[int, None] = {}
                 for status in ("queued", "in_progress"):
-                    data = self.gh.request("GET", f"/repos/{repo}/actions/runs?status={status}&per_page=100")
-                    for run in data["workflow_runs"]:
+                    for run in self._get_all(f"/repos/{repo}/actions/runs?status={status}", "workflow_runs"):
                         run_ids[run["id"]] = None
                 for run_id in run_ids:
-                    data = self.gh.request(
-                        "GET", f"/repos/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=100"
-                    )
-                    for job in data["jobs"]:
+                    for job in self._get_all(f"/repos/{repo}/actions/runs/{run_id}/jobs?filter=latest", "jobs"):
                         if job["status"] == "queued":
                             queued.setdefault(repo, []).append(job["labels"])
                         if job.get("runner_name"):
@@ -626,6 +630,16 @@ class Dispatcher:
             except ApiError as e:
                 log(f"WARNING: scanning {repo} failed: {e}")
         return queued, assigned
+
+    def _get_all(self, path: str, key: str) -> list:
+        items: list = []
+        page = 1
+        while True:
+            data = self.gh.request("GET", f"{path}&per_page={PAGE_SIZE}&page={page}")
+            items.extend(data[key])
+            if len(data[key]) < PAGE_SIZE or len(items) >= data["total_count"]:
+                return items
+            page += 1
 
     def _repo_allowed(self, repo: str) -> bool:
         allowed = allows_self_hosted(self.gh.request("GET", f"/repos/{repo}"))
@@ -698,9 +712,12 @@ class Dispatcher:
         if not runner.assigned:
             # Deleting the registration makes an idle listener exit, and GitHub refuses it once the runner has a job.
             # This catches a job picked up since the last scan.
-            if self._delete_registration(runner) == RUNNER_BUSY_STATUS and not force:
-                runner.assigned = True
-                log(f"[{runner.name}] Picked up a job; letting it finish")
+            result = self._delete_registration(runner)
+            if result != "gone" and not force:
+                if result == "busy":
+                    runner.assigned = True
+                    log(f"[{runner.name}] Picked up a job; letting it finish")
+                # Otherwise GitHub did not answer; keep the runner and try again on the next cycle
                 return
         log(f"[{runner.name}] Stopping ({reason})")
         try:
@@ -713,7 +730,7 @@ class Dispatcher:
             except subprocess.TimeoutExpired:
                 runner.proc.kill()
                 runner.proc.wait()
-        if self._delete_registration(runner) == RUNNER_BUSY_STATUS:
+        if self._delete_registration(runner) == "busy":
             log(
                 f"[{runner.name}] Its job was interrupted. Once GitHub shows the runner offline, "
                 f"remove it with ./cleanup-runners.sh {runner.repo}"
@@ -724,17 +741,18 @@ class Dispatcher:
         if runner in self.runners:
             self.runners.remove(runner)
 
-    def _delete_registration(self, runner: Runner) -> int:
-        """Return 0 once the registration is gone, otherwise the HTTP status of the refusal."""
+    def _delete_registration(self, runner: Runner) -> str:
+        """Return "gone", "busy" (the runner has a job) or "unknown"."""
         try:
             self.gh.request("DELETE", f"/repos/{runner.repo}/actions/runners/{runner.runner_id}")
         except ApiError as e:
             if e.status == 404:
-                return 0
-            if e.status != RUNNER_BUSY_STATUS:
-                log(f"[{runner.name}] WARNING: could not delete the runner registration: {e}")
-            return e.status
-        return 0
+                return "gone"
+            if e.status == RUNNER_BUSY_STATUS:
+                return "busy"
+            log(f"[{runner.name}] WARNING: could not delete the runner registration: {e}")
+            return "unknown"
+        return "gone"
 
     def _back_off(self, pool: Pool) -> None:
         self.blocked_until[pool.name] = time.monotonic() + LAUNCH_FAILURE_BACKOFF

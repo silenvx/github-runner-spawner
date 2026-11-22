@@ -15,7 +15,8 @@ $ErrorActionPreference = 'Stop'
 
 $RunnerDir = $RunnerDir.TrimEnd('\')
 $workDir = Join-Path $RunnerDir '_work'
-$wrapperName = Split-Path -Leaf $PSCommandPath
+# The full path keeps a pool from stopping the wrapper of another pool on the same machine
+$wrapperPath = $PSCommandPath
 
 function Write-Log([string]$Message) {
     Write-Output ('[{0}] {1}' -f (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss UTC'), $Message)
@@ -29,7 +30,7 @@ function Stop-RunnerProcesses {
     Get-CimInstance Win32_Process | Where-Object {
         $keep -notcontains $_.ProcessId -and (
             ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) -or
-            ($_.CommandLine -and $_.CommandLine.IndexOf($wrapperName, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+            ($_.CommandLine -and $_.CommandLine.IndexOf($wrapperPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
             ($_.Name -eq 'cmd.exe' -and $_.CommandLine -and
                 $_.CommandLine.IndexOf($prefix, [StringComparison]::OrdinalIgnoreCase) -ge 0)
         )

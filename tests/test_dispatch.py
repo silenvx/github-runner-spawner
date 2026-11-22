@@ -53,6 +53,7 @@ class ParseConfigTest(unittest.TestCase):
         cases = {
             "windows pool with two runners": {"windows": {"max_runners": 2}},
             "quote in runner_dir": {"windows": {"runner_dir": 'C:\\x" & calc'}},
+            "space in runner_dir": {"windows": {"runner_dir": "C:\\Users\\First Last\\actions-runner"}},
             "typo in key": {"linux": {"max_runner": 2}},
             "bad repo": {"linux": {"repos": ["not-a-repo"]}},
         }
