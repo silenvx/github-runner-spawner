@@ -1,0 +1,25 @@
+# Copy to config.toml and edit. Only private repositories are accepted.
+
+# Seconds between scans of each repository's queued jobs
+poll_interval = 15
+# Seconds a runner may wait without picking up a job before it is removed
+idle_timeout = 600
+
+# A queued job goes to the first pool (in file order) that lists its repository
+# and has every label in the job's runs-on.
+
+[pools.linux]
+kind = "docker"
+# The host architecture label (X64 or ARM64) is added automatically
+labels = ["self-hosted", "linux", "ephemeral"]
+repos = ["owner/private-repo"]
+max_runners = 4
+
+[pools.windows]
+kind = "windows"
+# ssh host alias of the Windows machine
+host = "windows"
+# Runner package extracted there (do not run config.cmd)
+runner_dir = 'C:\Users\<user>\actions-runner'
+labels = ["self-hosted", "windows", "X64"]
+repos = ["owner/private-windows-repo"]
