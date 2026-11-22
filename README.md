@@ -1,7 +1,7 @@
 # GitHub Runner Spawner
 
 GitHub Actions のジョブが来たときだけ self-hosted runner を 1 ジョブ分起動するツール。
-待機中のジョブが無いあいだは runner を 1 台も動かさない。
+待機中のジョブが無いあいだは新しい runner を起動しない。ジョブを取らなかった runner は `idle_timeout` 秒後に止める。
 
 runner は次の 2 種類のプールから起動する。
 
@@ -33,7 +33,7 @@ runner はこの値をログでマスクし、ジョブの環境変数からは�
 - `docker` プール: Docker (Docker Desktop / [OrbStack](https://orbstack.dev/) 推奨)
 - `windows` プール: 次の準備をした Windows 機
   - Mac から鍵認証で `ssh <host>` できる (OpenSSH Server)
-  - [actions/runner](https://github.com/actions/runner/releases) の Windows 版 (`actions-runner-win-x64-*.zip`) を任意のフォルダに展開してある。`config.cmd` は実行しない
+  - [actions/runner](https://github.com/actions/runner/releases) の Windows 版 (`actions-runner-win-x64-*.zip`) を、空白や `%` を含まない絶対パスのフォルダに展開してある。`config.cmd` は実行しない
   - ジョブが使うツール (git 等) を入れてある。ジョブは ssh のセッションで動くため、デスクトップ (GUI) は使えない
 
 ## 使い方
@@ -87,5 +87,5 @@ jobs:
 
 ```bash
 python3 -m unittest
-ruff check . && ruff format --check .
+uvx ruff check . && uvx ruff format --check .
 ```

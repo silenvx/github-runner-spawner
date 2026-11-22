@@ -54,6 +54,8 @@ class ParseConfigTest(unittest.TestCase):
             "windows pool with two runners": {"windows": {"max_runners": 2}},
             "quote in runner_dir": {"windows": {"runner_dir": 'C:\\x" & calc'}},
             "space in runner_dir": {"windows": {"runner_dir": "C:\\Users\\First Last\\actions-runner"}},
+            "percent in runner_dir": {"windows": {"runner_dir": "C:\\runner-%TEMP%"}},
+            "relative runner_dir": {"windows": {"runner_dir": "actions-runner"}},
             "typo in key": {"linux": {"max_runner": 2}},
             "bad repo": {"linux": {"repos": ["not-a-repo"]}},
         }

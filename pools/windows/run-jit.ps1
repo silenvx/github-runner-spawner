@@ -27,24 +27,39 @@ function Stop-RunnerProcesses {
     $self = Get-CimInstance Win32_Process -Filter "ProcessId = $PID"
     $keep = @($PID, $self.ParentProcessId)
     $prefix = $RunnerDir + '\'
-    Get-CimInstance Win32_Process | Where-Object {
+    $all = @(Get-CimInstance Win32_Process)
+    $targets = @{}
+    $all | Where-Object {
         $keep -notcontains $_.ProcessId -and (
             ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) -or
             ($_.CommandLine -and $_.CommandLine.IndexOf($wrapperPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
             ($_.Name -eq 'cmd.exe' -and $_.CommandLine -and
                 $_.CommandLine.IndexOf($prefix, [StringComparison]::OrdinalIgnoreCase) -ge 0)
         )
-    } | ForEach-Object {
-        Write-Log "Stopping $($_.Name) ($($_.ProcessId))"
-        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    } | ForEach-Object { $targets[$_.ProcessId] = $_ }
+    # Job steps can start processes outside RunnerDir (build servers and the like) that would keep _work locked
+    do {
+        $added = $false
+        foreach ($process in $all) {
+            if (-not $targets.ContainsKey($process.ProcessId) -and $keep -notcontains $process.ProcessId -and
+                $targets.ContainsKey($process.ParentProcessId)) {
+                $targets[$process.ProcessId] = $process
+                $added = $true
+            }
+        }
+    } while ($added)
+    foreach ($process in $targets.Values) {
+        Write-Log "Stopping $($process.Name) ($($process.ProcessId))"
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
     }
 }
 
 function Clear-Work {
     for ($attempt = 1; $attempt -le 5; $attempt++) {
         if (-not (Test-Path -LiteralPath $workDir)) { return }
-        # The \\?\ prefix lets rd delete paths longer than MAX_PATH (deep node_modules and the like)
-        & cmd.exe /d /c "rd /s /q `"\\?\$workDir`"" 2>&1 | Out-Null
+        # The \\?\ prefix lets rd delete paths longer than MAX_PATH (deep node_modules and the like).
+        # cmd discards rd's errors itself: Windows PowerShell 5.1 would turn them into a terminating error and skip the retries.
+        & cmd.exe /d /c "rd /s /q `"\\?\$workDir`" >nul 2>nul"
         if (-not (Test-Path -LiteralPath $workDir)) { return }
         Start-Sleep -Seconds 2
     }

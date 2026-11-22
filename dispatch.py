@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import platform
@@ -48,8 +49,10 @@ WINDOWS_WRAPPER = "spawner-run-jit.ps1"
 
 REPO_RE = re.compile(r"^[a-z0-9_.-]+/[a-z0-9_.-]+$")
 POOL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-# runner_dir is embedded in the remote PowerShell command line and in the scp target, which a remote shell may split
-UNSAFE_REMOTE_CHARS = set("\"'`$;&|<>\n\r ")
+# runner_dir is embedded in the remote PowerShell command line, in the scp target (which a remote shell may split)
+# and in a cmd.exe command line (which expands %VAR%)
+UNSAFE_REMOTE_CHARS = set("\"'`$;&|<>%^\n\r ")
+WINDOWS_ABS_PATH_RE = re.compile(r"^[A-Za-z]:\\")
 
 _log_lock = threading.Lock()
 
@@ -169,8 +172,8 @@ def parse_config(data: dict, arch_label: str) -> Config:
             runner_dir = table.get("runner_dir")
             if not isinstance(host, str) or not host or host.startswith("-"):
                 raise ConfigError(f"{where}.host must be an ssh host name")
-            if not isinstance(runner_dir, str) or not runner_dir:
-                raise ConfigError(f"{where}.runner_dir must be a path")
+            if not isinstance(runner_dir, str) or not WINDOWS_ABS_PATH_RE.match(runner_dir):
+                raise ConfigError(f"{where}.runner_dir must be an absolute path such as C:\\actions-runner")
             if UNSAFE_REMOTE_CHARS & set(runner_dir):
                 raise ConfigError(f"{where}.runner_dir must not contain spaces or shell characters")
             pools.append(
@@ -340,15 +343,17 @@ def _quote_remote(value: str) -> str:
 
 
 class DockerLauncher:
-    def __init__(self, pool: Pool, gh: GitHub) -> None:
+    def __init__(self, pool: Pool, gh: GitHub, owner: str) -> None:
         self.pool = pool
         self.gh = gh
+        # Another config may use the same pool name, so leftovers are matched per config file too
+        self.label = f"{DOCKER_POOL_LABEL}={owner}.{pool.name}"
         self.version: str | None = None
         self._checked_at = 0.0
 
     def prepare(self) -> None:
         leftovers = subprocess.run(
-            ["docker", "ps", "-aq", "--filter", f"label={DOCKER_POOL_LABEL}={self.pool.name}"],
+            ["docker", "ps", "-aq", "--filter", f"label={self.label}"],
             capture_output=True,
             text=True,
             check=True,
@@ -402,7 +407,7 @@ class DockerLauncher:
             "--name",
             name,
             "--label",
-            f"{DOCKER_POOL_LABEL}={self.pool.name}",
+            self.label,
             "-v",
             f"gh-runner-{slug}-npm-cache:/home/runner/.npm",
             "-v",
@@ -527,13 +532,13 @@ def _stream_output(name: str, stream: IO[str]) -> None:
 
 
 class Dispatcher:
-    def __init__(self, config: Config, gh: GitHub) -> None:
+    def __init__(self, config: Config, gh: GitHub, owner: str) -> None:
         self.config = config
         self.gh = gh
         self.launchers: dict[str, DockerLauncher | WindowsLauncher] = {}
         for pool in config.pools:
             if pool.kind == "docker":
-                self.launchers[pool.name] = DockerLauncher(pool, gh)
+                self.launchers[pool.name] = DockerLauncher(pool, gh, owner)
             else:
                 self.launchers[pool.name] = WindowsLauncher(pool)
         self.runners: list[Runner] = []
@@ -541,22 +546,28 @@ class Dispatcher:
         self.refused_repos: set[str] = set()
         self.draining = False
         self._drain_started = 0.0
+        self._drain_announced = False
         self.force_stop = False
-        self._wake = threading.Event()
 
     # -- lifecycle
 
+    # The handler only sets flags: it runs on the main thread, which may be holding the log lock
     def handle_signal(self, signum, frame) -> None:
         now = time.monotonic()
         if not self.draining:
             self.draining = True
             self._drain_started = now
-            log("Draining: no new runners; busy runners finish their jobs. Press Ctrl+C again to stop them now.")
         # `uv run` forwards the terminal's SIGINT, so one Ctrl+C arrives twice
         elif now - self._drain_started > SIGNAL_DEBOUNCE:
             self.force_stop = True
-            log("Stopping all runners now")
-        self._wake.set()
+
+    def _sleep(self) -> None:
+        # Short sleeps let a signal end the wait without the handler touching a lock
+        draining, force_stop = self.draining, self.force_stop
+        for _ in range(self.config.poll_interval):
+            if self.draining != draining or self.force_stop != force_stop:
+                return
+            time.sleep(1)
 
     def check_repos(self) -> None:
         for repo in self.config.repos:
@@ -574,20 +585,25 @@ class Dispatcher:
         log(f"Watching {', '.join(self.config.repos)} every {self.config.poll_interval}s")
         while True:
             if self.force_stop:
+                log("Stopping all runners now")
                 for runner in list(self.runners):
                     self.terminate(runner, "shutdown", force=True)
                 break
             self.reap_exited()
             self.settle_detached()
             if self.draining:
+                if not self._drain_announced:
+                    self._drain_announced = True
+                    log(
+                        "Draining: no new runners; busy runners finish their jobs. Press Ctrl+C again to stop them now."
+                    )
                 for runner in [r for r in self.runners if r.waiting]:
                     self.terminate(runner, "draining")
                 if not self.runners:
                     break
             else:
                 self.dispatch_once()
-            self._wake.wait(self.config.poll_interval)
-            self._wake.clear()
+            self._sleep()
         log("Stopped.")
 
     def dispatch_once(self) -> None:
@@ -602,6 +618,9 @@ class Dispatcher:
         for pool, repo in plan_spawns(self.config.pools, demand, self.runners, blocked):
             if self.draining:
                 break
+            # A launch failure earlier in this plan pauses the rest of that pool
+            if self.blocked_until.get(pool.name, 0.0) > time.monotonic():
+                continue
             self.spawn(pool, repo)
         for runner in idle_runners(self.runners, now, self.config.idle_timeout):
             self.terminate(runner, "idle timeout")
@@ -705,8 +724,16 @@ class Dispatcher:
                 log(f"[{runner.name}] Process ended but GitHub reports it online; waiting for it to finish")
             runner.detached = True
             return
-        self._delete_registration(runner)
-        self._forget(runner)
+        self._finish(runner, self._delete_registration(runner))
+
+    def _finish(self, runner: Runner, deletion: str) -> None:
+        runner.detached = True
+        if deletion == "gone":
+            self._forget(runner)
+        elif deletion == "busy":
+            # It reconnected and took a job; settle_detached checks again until the job ends
+            runner.assigned = True
+        # "unknown": keep it tracked so settle_detached retries the deletion
 
     def terminate(self, runner: Runner, reason: str, force: bool = False) -> None:
         if not runner.assigned:
@@ -730,12 +757,16 @@ class Dispatcher:
             except subprocess.TimeoutExpired:
                 runner.proc.kill()
                 runner.proc.wait()
-        if self._delete_registration(runner) == "busy":
+        deletion = self._delete_registration(runner)
+        if deletion == "busy":
             log(
                 f"[{runner.name}] Its job was interrupted. Once GitHub shows the runner offline, "
                 f"remove it with ./cleanup-runners.sh {runner.repo}"
             )
-        self._forget(runner)
+            self._forget(runner)
+            return
+        runner.proc = None
+        self._finish(runner, deletion)
 
     def _forget(self, runner: Runner) -> None:
         if runner in self.runners:
@@ -789,7 +820,8 @@ def main() -> None:
     except BlockingIOError:
         raise SystemExit(f"Error: another dispatcher is already using {args.config}") from None
 
-    dispatcher = Dispatcher(config, GitHub())
+    owner = hashlib.sha256(str(args.config.resolve()).encode()).hexdigest()[:12]
+    dispatcher = Dispatcher(config, GitHub(), owner)
     signal.signal(signal.SIGINT, dispatcher.handle_signal)
     signal.signal(signal.SIGTERM, dispatcher.handle_signal)
     dispatcher.run()
