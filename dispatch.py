@@ -624,6 +624,8 @@ class Dispatcher:
             self.spawn(pool, repo)
         for runner in idle_runners(self.runners, now, self.config.idle_timeout):
             self.terminate(runner, "idle timeout")
+        for runner in [r for r in self.runners if r.waiting and r.repo in self.refused_repos]:
+            self.terminate(runner, "repository is no longer private")
         for launcher in self.launchers.values():
             launcher.tick(now)
 
